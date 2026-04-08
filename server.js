@@ -7,10 +7,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 BYT TILL DIN STRIPE KEY (TEST först)
-const stripe = new Stripe("sk_test_xxxxxxxxxxxxx");
+// 🔐 HÄMTAR STRIPE KEY FRÅN RAILWAY (VIKTIGT)
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 🔥 TEST ROUTE (för att se att servern funkar)
+// 🔥 TEST ROUTE
 app.get("/", (req, res) => {
   res.send("Backend running 🚀");
 });
@@ -20,8 +20,8 @@ app.post("/create-checkout", async (req, res) => {
   try {
     const { amount, orderId } = req.body;
 
-    if (!amount) {
-      return res.status(400).json({ error: "Amount saknas" });
+    if (!amount || isNaN(amount)) {
+      return res.status(400).json({ error: "Ogiltigt belopp" });
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -57,7 +57,7 @@ app.post("/create-checkout", async (req, res) => {
   }
 });
 
-// 🔥 VIKTIGT FÖR RAILWAY
+// 🔥 PORT FÖR RAILWAY
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
