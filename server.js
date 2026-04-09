@@ -21,10 +21,20 @@ app.get("/", (req, res) => {
 // 🔥 CHECKOUT
 app.post("/create-checkout", async (req, res) => {
   try {
-    const { amount, orderId, customer } = req.body;
+    let { amount, orderId, customer } = req.body;
+
+    console.log("📦 Incoming:", req.body);
+
+    // 🔥 FIX: säkerställ amount
+    if (!amount || isNaN(amount)) {
+      console.log("⚠️ Amount invalid → fallback 100");
+      amount = 100; // fallback (1 kr test)
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card", "klarna"],
+
+      mode: "payment",
 
       line_items: [
         {
@@ -39,11 +49,9 @@ app.post("/create-checkout", async (req, res) => {
         },
       ],
 
-      mode: "payment",
-
-      // 🔥 SPARA DATA
+      // 🔥 Spara data
       metadata: {
-        orderId,
+        orderId: orderId || "ORDER_" + Date.now(),
         customerName: customer?.name || "",
         customerEmail: customer?.email || "",
         address: customer?.address || "",
@@ -52,20 +60,22 @@ app.post("/create-checkout", async (req, res) => {
         country: customer?.country || "",
       },
 
-      success_url: `https://www.multiartlink.com/confirmation?orderId=${orderId}`,
-      cancel_url: `https://www.multiartlink.com/checkout`,
+      success_url: "https://www.multiartlink.com/confirmation",
+      cancel_url: "https://www.multiartlink.com/checkout",
     });
+
+    console.log("✅ Stripe URL:", session.url);
 
     res.json({ url: session.url });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Stripe error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🔥 WEBHOOK (DETTA ÄR MAGIN)
-app.post("/webhook", async (req, res) => {
+// 🔥 WEBHOOK
+app.post("/webhook", (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   let event;
@@ -77,25 +87,23 @@ app.post("/webhook", async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.log("Webhook error:", err.message);
+    console.log("❌ Webhook error:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // 🎯 NÄR BETALNING ÄR KLAR
+  // 🎯 Betalning klar
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
 
-    console.log("💰 BETALNING KLAR:", session.metadata);
-
-    // 👉 HÄR KAN DU:
-    // - spara order i databas
-    // - skicka mail
-    // - boka LGT
-
-    // EXEMPEL (logg)
+    console.log("💰 BETALNING KLAR!");
     console.log("Order ID:", session.metadata.orderId);
     console.log("Kund:", session.metadata.customerName);
     console.log("Adress:", session.metadata.address);
+
+    // 👉 här kan du:
+    // - spara i databas
+    // - skicka mail
+    // - boka LGT
   }
 
   res.json({ received: true });
@@ -105,5 +113,5 @@ app.post("/webhook", async (req, res) => {
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
-  console.log("Server running 🚀");
+  console.log("🚀 Server running on port", PORT);
 });
