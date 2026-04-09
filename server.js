@@ -4,16 +4,16 @@ import cors from "cors";
 
 const app = express();
 
-// 🔐 STRIPE
+// 🔐 Stripe init
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ⚠️ Webhook behöver raw body
+// ⚠️ Webhook måste ha raw body
 app.use("/webhook", express.raw({ type: "application/json" }));
 
 app.use(cors());
 app.use(express.json());
 
-// 🔥 TEST
+// 🔥 TEST ROUTE
 app.get("/", (req, res) => {
   res.send("Backend running 🚀");
 });
@@ -21,20 +21,23 @@ app.get("/", (req, res) => {
 // 🔥 CHECKOUT
 app.post("/create-checkout", async (req, res) => {
   try {
-    let { amount, orderId, customer } = req.body;
+    const { amount, orderId, customer } = req.body;
 
-    console.log("📦 Incoming:", req.body);
+    console.log("📦 Incoming data:", req.body);
 
-    // 🔥 FIX: säkerställ amount
-    if (!amount || isNaN(amount)) {
-      console.log("⚠️ Amount invalid → fallback 100");
-      amount = 100; // fallback (1 kr test)
+    // ✅ Säker amount
+    const safeAmount = Number(amount);
+
+    if (!safeAmount || isNaN(safeAmount)) {
+      console.error("❌ Invalid amount:", amount);
+      return res.status(400).json({ error: "Invalid amount" });
     }
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card", "klarna"],
+    // ✅ fallback email (Stripe kräver ibland detta)
+    const email = customer?.email || "test@test.com";
 
-      mode: "payment",
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"], // 🔥 lägg tillbaka klarna senare
 
       line_items: [
         {
@@ -43,28 +46,31 @@ app.post("/create-checkout", async (req, res) => {
             product_data: {
               name: "Order från MultiArt",
             },
-            unit_amount: Math.round(Number(amount) * 100),
+            unit_amount: Math.round(safeAmount * 100),
           },
           quantity: 1,
         },
       ],
 
-      // 🔥 Spara data
+      mode: "payment",
+
+      customer_email: email,
+
       metadata: {
-        orderId: orderId || "ORDER_" + Date.now(),
+        orderId: orderId || "test-order",
         customerName: customer?.name || "",
-        customerEmail: customer?.email || "",
+        customerEmail: email,
         address: customer?.address || "",
         city: customer?.city || "",
         postalCode: customer?.postalCode || "",
         country: customer?.country || "",
       },
 
-      success_url: "https://www.multiartlink.com/confirmation",
-      cancel_url: "https://www.multiartlink.com/checkout",
+      success_url: `https://www.multiartlink.com/confirmation?orderId=${orderId}`,
+      cancel_url: `https://www.multiartlink.com/checkout`,
     });
 
-    console.log("✅ Stripe URL:", session.url);
+    console.log("✅ Stripe session created:", session.id);
 
     res.json({ url: session.url });
 
@@ -75,7 +81,7 @@ app.post("/create-checkout", async (req, res) => {
 });
 
 // 🔥 WEBHOOK
-app.post("/webhook", (req, res) => {
+app.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   let event;
@@ -91,27 +97,21 @@ app.post("/webhook", (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // 🎯 Betalning klar
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
 
-    console.log("💰 BETALNING KLAR!");
+    console.log("💰 BETALNING KLAR:");
     console.log("Order ID:", session.metadata.orderId);
     console.log("Kund:", session.metadata.customerName);
     console.log("Adress:", session.metadata.address);
-
-    // 👉 här kan du:
-    // - spara i databas
-    // - skicka mail
-    // - boka LGT
   }
 
   res.json({ received: true });
 });
 
-// 🔥 PORT
+// 🔥 START SERVER
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
-  console.log("🚀 Server running on port", PORT);
+  console.log("Server running 🚀");
 });
