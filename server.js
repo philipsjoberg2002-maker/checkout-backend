@@ -1,43 +1,61 @@
 import express from "express";
 import Stripe from "stripe";
 import cors from "cors";
+import fs from "fs";
+import nodemailer from "nodemailer";
 
 const app = express();
 
-// 🔐 Stripe init
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ⚠️ Webhook måste ha raw body
+// 📧 EMAIL
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+// ⚠️ webhook
 app.use("/webhook", express.raw({ type: "application/json" }));
 
 app.use(cors());
 app.use(express.json());
 
-// 🔥 TEST ROUTE
-app.get("/", (req, res) => {
-  res.send("Backend running 🚀");
-});
+const ORDERS_FILE = "orders.json";
+
+// 💾 SAVE ORDER
+const saveOrder = (order) => {
+  let orders = [];
+  if (fs.existsSync(ORDERS_FILE)) {
+    orders = JSON.parse(fs.readFileSync(ORDERS_FILE));
+  }
+  orders.push(order);
+  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+};
+
+// 🔥 ADMIN AUTH (enkelt skydd)
+const ADMIN_KEY = "12345"; // ändra senare
 
 // 🔥 CHECKOUT
 app.post("/create-checkout", async (req, res) => {
   try {
     const { amount, orderId, customer } = req.body;
 
-    console.log("📦 Incoming data:", req.body);
-
-    // ✅ Säker amount
     const safeAmount = Number(amount);
 
-    if (!safeAmount || isNaN(safeAmount)) {
-      console.error("❌ Invalid amount:", amount);
+    if (!safeAmount || isNaN(safeAmount) || safeAmount < 50) {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
-    // ✅ fallback email (Stripe kräver ibland detta)
-    const email = customer?.email || "test@test.com";
+    if (!customer?.email) {
+      return res.status(400).json({ error: "Email required" });
+    }
 
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"], // 🔥 lägg tillbaka klarna senare
+      payment_method_types: ["card", "klarna"],
+      mode: "payment",
 
       line_items: [
         {
@@ -52,30 +70,28 @@ app.post("/create-checkout", async (req, res) => {
         },
       ],
 
-      mode: "payment",
-
-      customer_email: email,
+      customer_email: customer.email,
 
       metadata: {
-        orderId: orderId || "test-order",
+        orderId: orderId || "ORDER_" + Date.now(),
         customerName: customer?.name || "",
-        customerEmail: email,
+        customerEmail: customer.email,
         address: customer?.address || "",
         city: customer?.city || "",
         postalCode: customer?.postalCode || "",
         country: customer?.country || "",
+        zone: customer?.zone || "",
+        shippingPrice: customer?.shippingPrice || "",
       },
 
       success_url: `https://www.multiartlink.com/confirmation?orderId=${orderId}`,
       cancel_url: `https://www.multiartlink.com/checkout`,
     });
 
-    console.log("✅ Stripe session created:", session.id);
-
     res.json({ url: session.url });
 
   } catch (err) {
-    console.error("❌ Stripe error:", err.message);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -93,25 +109,77 @@ app.post("/webhook", async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.log("❌ Webhook error:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send(err.message);
   }
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
 
-    console.log("💰 BETALNING KLAR:");
-    console.log("Order ID:", session.metadata.orderId);
-    console.log("Kund:", session.metadata.customerName);
-    console.log("Adress:", session.metadata.address);
+    const order = {
+      id: session.metadata.orderId,
+      amount: session.amount_total / 100,
+      customer: {
+        name: session.metadata.customerName,
+        email: session.metadata.customerEmail,
+        address: session.metadata.address,
+        city: session.metadata.city,
+        postalCode: session.metadata.postalCode,
+      },
+      shipping: {
+        zone: session.metadata.zone,
+        price: session.metadata.shippingPrice,
+      },
+      status: "PAID",
+      createdAt: new Date().toISOString(),
+    };
+
+    saveOrder(order);
+
+    // 📧 EMAIL TILL DIG
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER,
+      subject: `Ny order ${order.id}`,
+      text: JSON.stringify(order, null, 2),
+    });
+
+    // 📧 EMAIL TILL KUND
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: order.customer.email,
+      subject: "Orderbekräftelse",
+      text: `
+Tack för din beställning!
+
+Order: ${order.id}
+Belopp: ${order.amount} SEK
+
+Vi återkommer med leverans via LGT.
+      `,
+    });
+
+    // 🚚 LGT TRIGGER (redo)
+    console.log("🚚 SKICKA TILL LGT:", order);
   }
 
   res.json({ received: true });
 });
 
-// 🔥 START SERVER
-const PORT = process.env.PORT || 3001;
+// 🔥 ADMIN PANEL API
+app.get("/admin/orders", (req, res) => {
+  const key = req.headers["x-api-key"];
 
-app.listen(PORT, () => {
-  console.log("Server running 🚀");
+  if (key !== ADMIN_KEY) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  if (!fs.existsSync(ORDERS_FILE)) {
+    return res.json([]);
+  }
+
+  const orders = JSON.parse(fs.readFileSync(ORDERS_FILE));
+  res.json(orders);
 });
+
+// 🔥 START
+app.listen(process.env.PORT || 3001);
