@@ -4,25 +4,24 @@ import cors from "cors";
 
 const app = express();
 
+// 🔐 STRIPE
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// ⚠️ Webhook behöver raw body
+app.use("/webhook", express.raw({ type: "application/json" }));
+
 app.use(cors());
 app.use(express.json());
 
-// 🔐 HÄMTAR STRIPE KEY FRÅN RAILWAY (VIKTIGT)
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-// 🔥 TEST ROUTE
+// 🔥 TEST
 app.get("/", (req, res) => {
   res.send("Backend running 🚀");
 });
 
-// 🔥 CREATE CHECKOUT
+// 🔥 CHECKOUT
 app.post("/create-checkout", async (req, res) => {
   try {
-    const { amount, orderId } = req.body;
-
-    if (!amount || isNaN(amount)) {
-      return res.status(400).json({ error: "Ogiltigt belopp" });
-    }
+    const { amount, orderId, customer } = req.body;
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card", "klarna"],
@@ -42,7 +41,17 @@ app.post("/create-checkout", async (req, res) => {
 
       mode: "payment",
 
-      // 🔥 DIN RIKTIGA DOMÄN
+      // 🔥 SPARA DATA
+      metadata: {
+        orderId,
+        customerName: customer?.name || "",
+        customerEmail: customer?.email || "",
+        address: customer?.address || "",
+        city: customer?.city || "",
+        postalCode: customer?.postalCode || "",
+        country: customer?.country || "",
+      },
+
       success_url: `https://www.multiartlink.com/confirmation?orderId=${orderId}`,
       cancel_url: `https://www.multiartlink.com/checkout`,
     });
@@ -50,16 +59,51 @@ app.post("/create-checkout", async (req, res) => {
     res.json({ url: session.url });
 
   } catch (err) {
-    console.error("Stripe error:", err);
-    res.status(500).json({
-      error: err.message,
-    });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 🔥 PORT FÖR RAILWAY
+// 🔥 WEBHOOK (DETTA ÄR MAGIN)
+app.post("/webhook", async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.log("Webhook error:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // 🎯 NÄR BETALNING ÄR KLAR
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+
+    console.log("💰 BETALNING KLAR:", session.metadata);
+
+    // 👉 HÄR KAN DU:
+    // - spara order i databas
+    // - skicka mail
+    // - boka LGT
+
+    // EXEMPEL (logg)
+    console.log("Order ID:", session.metadata.orderId);
+    console.log("Kund:", session.metadata.customerName);
+    console.log("Adress:", session.metadata.address);
+  }
+
+  res.json({ received: true });
+});
+
+// 🔥 PORT
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log("Server running 🚀");
 });
