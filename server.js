@@ -2,41 +2,42 @@ import express from "express";
 import Stripe from "stripe";
 import cors from "cors";
 import fs from "fs";
-import nodemailer from "nodemailer";
 
 const app = express();
 
+// 🔐 Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 📧 EMAIL
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// ⚠️ webhook
+// ⚠️ webhook raw body
 app.use("/webhook", express.raw({ type: "application/json" }));
 
 app.use(cors());
 app.use(express.json());
 
-const ORDERS_FILE = "orders.json";
+// 📁 orders file
+const ORDERS_FILE = "./orders.json";
 
-// 💾 SAVE ORDER
+// 💾 save order
 const saveOrder = (order) => {
   let orders = [];
+
   if (fs.existsSync(ORDERS_FILE)) {
-    orders = JSON.parse(fs.readFileSync(ORDERS_FILE));
+    try {
+      orders = JSON.parse(fs.readFileSync(ORDERS_FILE));
+    } catch {
+      orders = [];
+    }
   }
+
   orders.push(order);
+
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 };
 
-// 🔥 ADMIN AUTH (enkelt skydd)
-const ADMIN_KEY = "12345"; // ändra senare
+// 🔥 TEST
+app.get("/", (req, res) => {
+  res.send("Backend running 🚀");
+});
 
 // 🔥 CHECKOUT
 app.post("/create-checkout", async (req, res) => {
@@ -54,7 +55,8 @@ app.post("/create-checkout", async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card", "klarna"],
+      payment_method_types: ["card"],
+
       mode: "payment",
 
       line_items: [
@@ -84,20 +86,20 @@ app.post("/create-checkout", async (req, res) => {
         shippingPrice: customer?.shippingPrice || "",
       },
 
-      success_url: `https://www.multiartlink.com/confirmation?orderId=${orderId}`,
+      success_url: `https://www.multiartlink.com/confirmation`,
       cancel_url: `https://www.multiartlink.com/checkout`,
     });
 
     res.json({ url: session.url });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Stripe error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // 🔥 WEBHOOK
-app.post("/webhook", async (req, res) => {
+app.post("/webhook", (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   let event;
@@ -109,6 +111,7 @@ app.post("/webhook", async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
+    console.log("❌ Webhook error:", err.message);
     return res.status(400).send(err.message);
   }
 
@@ -124,6 +127,7 @@ app.post("/webhook", async (req, res) => {
         address: session.metadata.address,
         city: session.metadata.city,
         postalCode: session.metadata.postalCode,
+        country: session.metadata.country,
       },
       shipping: {
         zone: session.metadata.zone,
@@ -133,46 +137,16 @@ app.post("/webhook", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
+    console.log("💰 ORDER:", order);
+
     saveOrder(order);
-
-    // 📧 EMAIL TILL DIG
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER,
-      subject: `Ny order ${order.id}`,
-      text: JSON.stringify(order, null, 2),
-    });
-
-    // 📧 EMAIL TILL KUND
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: order.customer.email,
-      subject: "Orderbekräftelse",
-      text: `
-Tack för din beställning!
-
-Order: ${order.id}
-Belopp: ${order.amount} SEK
-
-Vi återkommer med leverans via LGT.
-      `,
-    });
-
-    // 🚚 LGT TRIGGER (redo)
-    console.log("🚚 SKICKA TILL LGT:", order);
   }
 
   res.json({ received: true });
 });
 
-// 🔥 ADMIN PANEL API
-app.get("/admin/orders", (req, res) => {
-  const key = req.headers["x-api-key"];
-
-  if (key !== ADMIN_KEY) {
-    return res.status(403).json({ error: "Unauthorized" });
-  }
-
+// 🔥 GET ORDERS
+app.get("/orders", (req, res) => {
   if (!fs.existsSync(ORDERS_FILE)) {
     return res.json([]);
   }
@@ -182,4 +156,8 @@ app.get("/admin/orders", (req, res) => {
 });
 
 // 🔥 START
-app.listen(process.env.PORT || 3001);
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, () => {
+  console.log("Server running 🚀");
+});
